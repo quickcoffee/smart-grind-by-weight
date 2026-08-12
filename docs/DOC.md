@@ -503,8 +503,9 @@ The screensaver uses a custom 280 × 456 RGB565 image uploaded from the Web Flas
 
 - **Timing settings**: Configure idle timeout and startup image timeout in the Web Flasher **Screensaver** tab.
 - **Device settings**: Configure brightness and startup/sleep enable toggles under **Menu → Display**.
-- **Startup behavior**: On normal Ready boots, the image is drawn early while the full UI initializes, then the regular timed screensaver overlay takes over.
+- **Startup behavior**: On normal Ready boots, the image is drawn early while the full UI initializes, then the timed screensaver takes over those same pixels without re-reading them from flash.
 - **OTA behavior**: During BLE OTA updates and OTA failure warnings, the screensaver is disabled so progress and recovery prompts stay visible.
+- **Memory behavior**: The image is streamed from LittleFS to the panel in small row chunks rather than held in a full-frame buffer, so displaying it costs a few KB of transient memory instead of the ~250 KB the image occupies on flash. While it is showing, LVGL's panel flush is suspended so it cannot repaint over the image; an empty overlay screen absorbs touches meant for the widgets underneath.
 
 ---
 
