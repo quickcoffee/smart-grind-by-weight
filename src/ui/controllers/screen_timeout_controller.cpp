@@ -10,7 +10,6 @@
 
 ScreenTimeoutController::ScreenTimeoutController(UIManager* manager)
     : ui_manager_(manager)
-    , timing_settings_(ScreensaverSettings::load_timing())
     , screen_dimmed_(false) {}
 
 void ScreenTimeoutController::register_events() {}
@@ -35,19 +34,20 @@ void ScreenTimeoutController::update() {
         return;
     }
 
-    uint32_t now = millis();
-    refresh_settings_if_needed(now);
-
     auto* touch_driver = display->get_touch_driver();
     if (!touch_driver) {
         return;
     }
 
+    // Cached in RAM by ScreensaverSettings, so this is a plain load rather than
+    // an NVS open on every tick.
+    auto timing_settings = ScreensaverSettings::load_timing();
+
     uint32_t ms_since_touch = touch_driver->get_ms_since_last_touch();
     auto* sensor = hardware->get_weight_sensor();
-    uint32_t idle_timeout_ms = ScreensaverSettings::idle_timeout_ms(timing_settings_);
+    uint32_t idle_timeout_ms = ScreensaverSettings::idle_timeout_ms(timing_settings);
     uint32_t weight_activity_window_ms =
-        ScreensaverSettings::weight_activity_window_ms(timing_settings_);
+        ScreensaverSettings::weight_activity_window_ms(timing_settings);
     bool recent_weight_activity = sensor &&
                                   sensor->weight_range_exceeds(weight_activity_window_ms,
                                                                USER_WEIGHT_ACTIVITY_THRESHOLD_G);
@@ -71,18 +71,6 @@ void ScreenTimeoutController::update() {
     } else if (!should_dim && screen_dimmed_) {
         restore_normal_display(display);
     }
-}
-
-void ScreenTimeoutController::refresh_settings_if_needed(uint32_t now_ms) {
-    constexpr uint32_t kRefreshIntervalMs = 5000;
-
-    if (last_settings_refresh_ms_ != 0 &&
-        now_ms - last_settings_refresh_ms_ < kRefreshIntervalMs) {
-        return;
-    }
-
-    timing_settings_ = ScreensaverSettings::load_timing();
-    last_settings_refresh_ms_ = now_ms;
 }
 
 void ScreenTimeoutController::restore_normal_display(DisplayManager* display) {

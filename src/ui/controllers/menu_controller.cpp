@@ -12,6 +12,7 @@
 #include "../../controllers/grind_mode_traits.h"
 #include "../../logging/grind_logging.h"
 #include "../../system/diagnostics_controller.h"
+#include "../../system/screensaver_settings.h"
 #include "../../system/statistics_manager.h"
 #include "../components/blocking_overlay.h"
 #include "../components/ui_operations.h"
@@ -569,10 +570,7 @@ void MenuUIController::handle_screensaver_startup_toggle() {
     if (!toggle) return;
 
     bool enabled = lv_obj_has_state(toggle, LV_STATE_CHECKED);
-    Preferences prefs;
-    prefs.begin("screensaver", false);
-    prefs.putBool("startup", enabled);
-    prefs.end();
+    ScreensaverSettings::set_startup_enabled(enabled);
 
     LOG_BLE("Screensaver startup: %s\n", enabled ? "enabled" : "disabled");
 }
@@ -582,11 +580,9 @@ void MenuUIController::handle_screensaver_sleep_toggle() {
     if (!toggle) return;
 
     bool enabled = lv_obj_has_state(toggle, LV_STATE_CHECKED);
-    Preferences prefs;
-    prefs.begin("screensaver", false);
-    prefs.putBool("sleep", enabled);
-    prefs.end();
+    ScreensaverSettings::set_sleep_enabled(enabled);
 
+    LOG_BLE("Screensaver sleep: %s\n", enabled ? "enabled" : "disabled");
 }
 
 void MenuUIController::perform_factory_reset() {
