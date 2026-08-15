@@ -23,6 +23,7 @@ import argparse
 import asyncio
 import sys
 import os
+import platform
 import struct
 import time
 import subprocess
@@ -42,11 +43,19 @@ def ensure_venv_requirements():
     
     if not venv_dir.exists():
         print(f"[ERROR] Virtual environment not found at {venv_dir}")
-        print("Run: python3 -m venv tools/venv && source tools/venv/bin/activate && pip install -r tools/requirements.txt")
+        print("Run: python tools/grinder.py install")
         return False
-    
-    pip_cmd = str(venv_dir / "bin" / "pip")
-    
+
+    if platform.system() == "Windows":
+        venv_python = venv_dir / "Scripts" / "python.exe"
+    else:
+        venv_python = venv_dir / "bin" / "python3"
+
+    if not venv_python.exists():
+        print(f"[ERROR] Virtual environment interpreter not found at {venv_python}")
+        print("Run: python tools/grinder.py install")
+        return False
+
     # Check if requirements.txt exists
     if not requirements_file.exists():
         print(f"[WARNING] Requirements file not found at {requirements_file}")
@@ -55,7 +64,7 @@ def ensure_venv_requirements():
     # Check and install missing requirements
     try:
         print("[INFO] Checking venv dependencies...")
-        result = subprocess.run([pip_cmd, "install", "-r", str(requirements_file)], 
+        result = subprocess.run([str(venv_python), "-m", "pip", "install", "-r", str(requirements_file)],
                               capture_output=True, text=True)
         if result.returncode != 0:
             print(f"[WARNING] Some dependencies may not be installed: {result.stderr}")
