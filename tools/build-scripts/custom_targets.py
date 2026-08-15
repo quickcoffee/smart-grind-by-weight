@@ -2,6 +2,7 @@
 
 Import("env")
 import os
+import sys
 
 def upload_ble_action(source, target, env):
     """
@@ -31,7 +32,8 @@ def upload_ble_action(source, target, env):
     # Run the unified grinder tool for upload
     print("--- Starting BLE upload ---")
     grinder_script = os.path.join(project_dir, "tools", "grinder.py")
-    env.Execute(f"python3 {grinder_script} upload {firmware_path}")
+    # "python3" is not on PATH on Windows; use the interpreter running SCons.
+    env.Execute(f'"{sys.executable}" "{grinder_script}" upload "{firmware_path}"')
 
 # Register custom targets
 env.AddCustomTarget(

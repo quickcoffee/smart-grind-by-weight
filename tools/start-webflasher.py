@@ -7,9 +7,11 @@ Automatically handles port conflicts and starts the server
 import argparse
 import os
 import sys
+import platform
 import signal
 import subprocess
 import socket
+import time
 from pathlib import Path
 import http.server
 import socketserver
@@ -25,8 +27,33 @@ def is_port_in_use(port):
         except OSError:
             return True
 
+def manual_kill_hint(port):
+    """Platform-appropriate command for freeing the port by hand."""
+    if platform.system() == "Windows":
+        return f'netstat -ano | findstr :{port}  (then: taskkill /PID <pid> /F)'
+    return f'lsof -ti :{port} | xargs kill'
+
 def get_process_using_port(port):
     """Get the PID of the process using the specified port."""
+    if platform.system() == "Windows":
+        try:
+            result = subprocess.run(
+                ['netstat', '-ano'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                # Proto  Local Address  Foreign Address  State      PID
+                if len(parts) >= 5 and parts[0].upper() == 'TCP' \
+                        and parts[3].upper() == 'LISTENING' \
+                        and parts[1].rsplit(':', 1)[-1] == str(port):
+                    return int(parts[4])
+        except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+            pass
+        return None
+
     try:
         # macOS/Linux
         result = subprocess.run(
@@ -42,35 +69,63 @@ def get_process_using_port(port):
 
     return None
 
+def wait_for_port_release(port, attempts=30, interval=0.1):
+    """Poll until the port is free, returning whether it was released."""
+    for _ in range(attempts):
+        time.sleep(interval)
+        if not is_port_in_use(port):
+            return True
+    return False
+
 def kill_process_on_port(port):
     """Kill the process using the specified port."""
     pid = get_process_using_port(port)
-    if pid:
+    if not pid:
+        return False
+
+    print(f"[INFO] Killing process {pid} using port {port}")
+
+    if platform.system() == "Windows":
+        # Windows has no SIGTERM/SIGKILL for arbitrary processes; taskkill /F is
+        # the equivalent forced terminate.
         try:
-            print(f"[INFO] Killing process {pid} using port {port}")
-            os.kill(pid, signal.SIGTERM)
+            result = subprocess.run(
+                ['taskkill', '/PID', str(pid), '/F'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode != 0:
+                print(f"[ERROR] taskkill failed: {result.stderr.strip()}")
+                return False
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            print(f"[ERROR] Could not run taskkill: {e}")
+            return False
 
-            # Wait for process to actually die (up to 3 seconds)
-            import time
-            for i in range(30):
-                time.sleep(0.1)
-                if not is_port_in_use(port):
-                    print(f"[OK] Port {port} is now free")
-                    return True
+        if wait_for_port_release(port):
+            print(f"[OK] Port {port} is now free")
+            return True
+        return False
 
-            # If SIGTERM didn't work, try SIGKILL
-            print(f"[WARNING] Process didn't respond to SIGTERM, trying SIGKILL")
-            os.kill(pid, signal.SIGKILL)
-            time.sleep(0.5)
+    try:
+        os.kill(pid, signal.SIGTERM)
+
+        if wait_for_port_release(port):
+            print(f"[OK] Port {port} is now free")
             return True
 
-        except ProcessLookupError:
-            print(f"[WARNING] Process {pid} not found")
-            return False
-        except PermissionError:
-            print(f"[ERROR] Permission denied to kill process {pid}")
-            return False
-    return False
+        # If SIGTERM didn't work, try SIGKILL
+        print(f"[WARNING] Process didn't respond to SIGTERM, trying SIGKILL")
+        os.kill(pid, signal.SIGKILL)
+        time.sleep(0.5)
+        return True
+
+    except ProcessLookupError:
+        print(f"[WARNING] Process {pid} not found")
+        return False
+    except PermissionError:
+        print(f"[ERROR] Permission denied to kill process {pid}")
+        return False
 
 class QuietHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     """HTTP request handler with reduced logging."""
@@ -164,7 +219,7 @@ Examples:
                     print(f"[ERROR] Port {args.port} still in use after attempting to kill process")
                     sys.exit(1)
             else:
-                print(f"[INFO] Cancelled. You can manually kill the process using: lsof -ti :{args.port} | xargs kill")
+                print(f"[INFO] Cancelled. You can manually kill the process using: {manual_kill_hint(args.port)}")
                 sys.exit(0)
         except (KeyboardInterrupt, EOFError):
             print(f"\n[INFO] Cancelled by user")

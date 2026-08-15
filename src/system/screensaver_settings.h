@@ -26,6 +26,8 @@ bool is_valid_idle_timeout(uint16_t idle_timeout_s);
 bool is_valid_startup_timeout(uint8_t startup_timeout_s);
 bool is_startup_enabled();
 bool is_sleep_enabled();
+bool set_startup_enabled(bool enabled);
+bool set_sleep_enabled(bool enabled);
 uint32_t idle_timeout_ms(const ScreensaverTimingSettings& settings);
 uint32_t weight_activity_window_ms(const ScreensaverTimingSettings& settings);
 

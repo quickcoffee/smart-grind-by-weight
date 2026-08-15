@@ -204,8 +204,11 @@ void BluetoothManager::enable(unsigned long timeout_ms) {
     );
     delay(BLE_INIT_CHARACTERISTIC_DELAY_MS);
     
-    // Create system info service
-    sysinfo_service = ble_server->createService(BLEUUID(BLE_SYSINFO_SERVICE_UUID), 15);
+    // Create system info service.
+    // Needs exactly 15 handles (1 service + 4 notify chars at 3 each + 1 write
+    // char at 2). Requested with headroom: if the count ever falls short the
+    // trailing characteristic silently fails to register rather than erroring.
+    sysinfo_service = ble_server->createService(BLEUUID(BLE_SYSINFO_SERVICE_UUID), 17);
     delay(BLE_INIT_SERVICE_DELAY_MS);
     
     sysinfo_system_characteristic = sysinfo_service->createCharacteristic(

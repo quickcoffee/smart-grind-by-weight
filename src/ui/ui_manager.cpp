@@ -64,7 +64,14 @@ void UIManager::init(HardwareManager* hw_mgr, StateMachine* sm,
         state_machine->is_state(UIState::READY) &&
         screensaver_controller_->is_startup_enabled() &&
         screensaver_controller_->has_image()) {
-        screensaver_controller_->show();
+        // main.cpp paints the splash before the UI task exists so it appears as
+        // early as possible; reuse those pixels instead of re-reading flash.
+        auto* display = hardware_manager->get_display();
+        if (display && display->is_showing_external_paint()) {
+            screensaver_controller_->show_over_existing_paint();
+        } else {
+            screensaver_controller_->show();
+        }
         uint32_t startup_timeout_ms = screensaver_controller_->get_startup_timeout_ms();
         lv_timer_create([](lv_timer_t* t) {
             auto* sc = static_cast<ScreensaverController*>(lv_timer_get_user_data(t));
@@ -343,6 +350,10 @@ void UIManager::init_controllers() {
     // Wire screensaver controller into screen timeout controller
     if (screen_timeout_controller_ && screensaver_controller_) {
         screen_timeout_controller_->set_screensaver_controller(screensaver_controller_.get());
+    }
+
+    if (screensaver_controller_ && hardware_manager) {
+        screensaver_controller_->set_display(hardware_manager->get_display());
     }
 }
 

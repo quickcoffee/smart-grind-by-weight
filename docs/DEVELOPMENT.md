@@ -30,6 +30,43 @@ This guide is for developers who want to build the Smart Grind-by-Weight firmwar
 
 This automatically creates a virtual environment and installs all required dependencies including PlatformIO.
 
+### Windows
+
+The tooling is cross-platform, but Windows uses `python` rather than `python3` and
+`\` path separators. From PowerShell in the repo root:
+
+```powershell
+python tools\grinder.py install
+python tools\grinder.py build
+```
+
+Windows-specific notes:
+
+- **Python** must come from [python.org](https://www.python.org/downloads/windows/) or
+  `winget install Python.Python.3.12`, with "Add python.exe to PATH" ticked. The
+  Microsoft Store stub that `python3` resolves to by default cannot create the venv.
+- **Git** must be on `PATH` (`winget install Git.Git`). The pre-build script shells out
+  to `git` to stamp the build number and commit into the firmware; without it the build
+  still succeeds but the metadata is blank.
+- **USB drivers**: the Waveshare board enumerates as a native USB CDC device on
+  ESP32-S3, so no driver is normally needed. If no COM port appears, hold **BOOT**,
+  tap **RESET**, release **BOOT** to force the ROM bootloader, then check Device
+  Manager. PlatformIO auto-detects the port; override it in `platformio.ini` with
+  `upload_port = COM7` if several devices are attached.
+- **BLE OTA** needs a working Bluetooth LE adapter. `bleak` uses the WinRT API, which
+  requires Windows 10 1809 or newer.
+- **`detools` needs a C compiler.** It publishes no wheels, only an sdist, so pip builds
+  it from source and fails on a machine without the
+  [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+  ("Desktop development with C++" workload). `grinder.py install` detects this and
+  continues without it, which leaves everything except BLE OTA working — building
+  firmware, flashing over USB, the serial monitor, the web flasher and the Streamlit
+  report are all unaffected. Install the Build Tools and re-run `install` only if you
+  want wireless updates.
+- **Long paths**: enable long path support if the build fails on deep paths inside
+  `.pio` — `git config --system core.longpaths true` and the `LongPathsEnabled`
+  registry setting.
+
 ---
 
 ## 🔧 Build Targets

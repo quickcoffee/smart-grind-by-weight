@@ -5,6 +5,7 @@
 #include <Preferences.h>
 #include "../../config/constants.h"
 #include "../../logging/grind_logging.h"
+#include "../../system/screensaver_settings.h"
 #include "../../system/statistics_manager.h"
 #include "../../hardware/hardware_manager.h"
 #include "grinding_screen.h"
@@ -931,11 +932,8 @@ void MenuScreen::update_grind_freshness_hours_label(float hours) {
 void MenuScreen::update_screensaver_toggles() {
     bool image_exists = LittleFS.exists(BLE_IMAGE_FILENAME);
 
-    Preferences prefs;
-    prefs.begin("screensaver", true);
-    bool startup_on = prefs.getBool("startup", false);
-    bool sleep_on = prefs.getBool("sleep", false);
-    prefs.end();
+    bool startup_on = ScreensaverSettings::is_startup_enabled();
+    bool sleep_on = ScreensaverSettings::is_sleep_enabled();
 
     if (screensaver_startup_toggle) {
         if (startup_on && image_exists) {

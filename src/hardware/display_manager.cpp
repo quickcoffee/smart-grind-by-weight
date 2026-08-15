@@ -40,6 +40,8 @@ void DisplayManager::init() {
     draw_buffer = nullptr;
     dma_staging_buffer = nullptr;
     dma_staging_rows = 16;
+    panel_flush_enabled = true;
+    showing_external_paint = false;
 
     const size_t draw_rows = 40; // 280 * 40 * 2 = 22,400 bytes
     buffer_size = screen_width * draw_rows * sizeof(uint16_t);
@@ -161,6 +163,7 @@ bool DisplayManager::draw_rgb565_file(const char* path, uint16_t width, uint16_t
 
     heap_caps_free(row_buffer);
     file.close();
+    showing_external_paint = success;
     return success;
 }
 
@@ -175,7 +178,17 @@ void DisplayManager::display_rounder_cb(lv_event_t* e) {
 
 void DisplayManager::display_flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
     if (!g_display_manager || !g_display_manager->gfx_device) return;
-    
+
+    // Screensaver owns the panel: drop LVGL's pixels but keep the pipeline
+    // moving, otherwise LVGL stalls waiting for the flush to complete.
+    if (!g_display_manager->panel_flush_enabled) {
+        lv_display_flush_ready(disp);
+        return;
+    }
+
+    // LVGL is about to own these pixels again.
+    g_display_manager->showing_external_paint = false;
+
     uint32_t w = lv_area_get_width(area);
     uint32_t h = lv_area_get_height(area);
 

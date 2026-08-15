@@ -23,6 +23,7 @@ import argparse
 import asyncio
 import sys
 import os
+import platform
 import struct
 import time
 import subprocess
@@ -42,11 +43,19 @@ def ensure_venv_requirements():
     
     if not venv_dir.exists():
         print(f"[ERROR] Virtual environment not found at {venv_dir}")
-        print("Run: python3 -m venv tools/venv && source tools/venv/bin/activate && pip install -r tools/requirements.txt")
+        print("Run: python tools/grinder.py install")
         return False
-    
-    pip_cmd = str(venv_dir / "bin" / "pip")
-    
+
+    if platform.system() == "Windows":
+        venv_python = venv_dir / "Scripts" / "python.exe"
+    else:
+        venv_python = venv_dir / "bin" / "python3"
+
+    if not venv_python.exists():
+        print(f"[ERROR] Virtual environment interpreter not found at {venv_python}")
+        print("Run: python tools/grinder.py install")
+        return False
+
     # Check if requirements.txt exists
     if not requirements_file.exists():
         print(f"[WARNING] Requirements file not found at {requirements_file}")
@@ -55,7 +64,7 @@ def ensure_venv_requirements():
     # Check and install missing requirements
     try:
         print("[INFO] Checking venv dependencies...")
-        result = subprocess.run([pip_cmd, "install", "-r", str(requirements_file)], 
+        result = subprocess.run([str(venv_python), "-m", "pip", "install", "-r", str(requirements_file)],
                               capture_output=True, text=True)
         if result.returncode != 0:
             print(f"[WARNING] Some dependencies may not be installed: {result.stderr}")
@@ -390,16 +399,24 @@ class GrinderBLETool:
             patch_path = patch_file.name
             patch_file.close()
             
-            # Use detools from the project venv (ensured by ensure_venv_requirements)
+            # Use detools from the project venv. Invoke it through the venv
+            # interpreter rather than the console script, whose name and
+            # location differ per platform.
             venv_dir = Path(__file__).parent.parent / "venv"
-            detools_cmd = str(venv_dir / "bin" / "detools")
+            if platform.system() == "Windows":
+                venv_python = venv_dir / "Scripts" / "python.exe"
+            else:
+                venv_python = venv_dir / "bin" / "python3"
 
-            cmd = [detools_cmd, 'create_patch', '-c', 'heatshrink', str(old_firmware_path), new_firmware_path, patch_path]
+            cmd = [str(venv_python), '-m', 'detools', 'create_patch', '-c', 'heatshrink',
+                   str(old_firmware_path), new_firmware_path, patch_path]
             result = subprocess.run(cmd, capture_output=True, text=True)
 
             if result.returncode != 0:
                 print(f"[ERROR] detools patch creation failed: {result.stderr}")
-                print("[INFO] If detools is missing, the dependency check should have installed it")
+                print("[INFO] detools needs a C compiler to install. On Windows, install the")
+                print("       Microsoft C++ Build Tools and re-run: python tools\\grinder.py install")
+                print("       Or flash over USB instead, which does not need detools.")
                 return None
             with open(patch_path, 'rb') as f: patch_data = f.read()
             
