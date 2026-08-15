@@ -399,16 +399,24 @@ class GrinderBLETool:
             patch_path = patch_file.name
             patch_file.close()
             
-            # Use detools from the project venv (ensured by ensure_venv_requirements)
+            # Use detools from the project venv. Invoke it through the venv
+            # interpreter rather than the console script, whose name and
+            # location differ per platform.
             venv_dir = Path(__file__).parent.parent / "venv"
-            detools_cmd = str(venv_dir / "bin" / "detools")
+            if platform.system() == "Windows":
+                venv_python = venv_dir / "Scripts" / "python.exe"
+            else:
+                venv_python = venv_dir / "bin" / "python3"
 
-            cmd = [detools_cmd, 'create_patch', '-c', 'heatshrink', str(old_firmware_path), new_firmware_path, patch_path]
+            cmd = [str(venv_python), '-m', 'detools', 'create_patch', '-c', 'heatshrink',
+                   str(old_firmware_path), new_firmware_path, patch_path]
             result = subprocess.run(cmd, capture_output=True, text=True)
 
             if result.returncode != 0:
                 print(f"[ERROR] detools patch creation failed: {result.stderr}")
-                print("[INFO] If detools is missing, the dependency check should have installed it")
+                print("[INFO] detools needs a C compiler to install. On Windows, install the")
+                print("       Microsoft C++ Build Tools and re-run: python tools\\grinder.py install")
+                print("       Or flash over USB instead, which does not need detools.")
                 return None
             with open(patch_path, 'rb') as f: patch_data = f.read()
             

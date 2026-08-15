@@ -55,6 +55,14 @@ Windows-specific notes:
   `upload_port = COM7` if several devices are attached.
 - **BLE OTA** needs a working Bluetooth LE adapter. `bleak` uses the WinRT API, which
   requires Windows 10 1809 or newer.
+- **`detools` needs a C compiler.** It publishes no wheels, only an sdist, so pip builds
+  it from source and fails on a machine without the
+  [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+  ("Desktop development with C++" workload). `grinder.py install` detects this and
+  continues without it, which leaves everything except BLE OTA working — building
+  firmware, flashing over USB, the serial monitor, the web flasher and the Streamlit
+  report are all unaffected. Install the Build Tools and re-run `install` only if you
+  want wireless updates.
 - **Long paths**: enable long path support if the build fails on deep paths inside
   `.pio` — `git config --system core.longpaths true` and the `LongPathsEnabled`
   registry setting.

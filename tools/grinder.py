@@ -7,6 +7,7 @@ Single script for all grinder operations: build, upload, export, analyze, report
 import argparse
 import asyncio
 import os
+import re
 import sys
 import subprocess
 import platform
@@ -122,11 +123,17 @@ class GrinderTool:
             result = subprocess.run([
                 str(self.venv_pip), "install", "-q", "-r", str(self.requirements_txt)
             ], capture_output=True, text=True)
-            
+
             if result.returncode != 0:
-                self.print_error(f"Failed to install dependencies: {result.stderr}")
-                return False
-            
+                # detools ships only an sdist, so it needs a C toolchain to build.
+                # That is routinely absent on Windows, and it is only used to
+                # create BLE OTA delta patches - building firmware and flashing
+                # over USB do not need it. Retry without it rather than leaving
+                # the user with no usable environment at all.
+                if not self.install_without_optional_packages(result.stderr):
+                    self.print_error(f"Failed to install dependencies: {result.stderr}")
+                    return False
+
             # Also install colorama if not already present
             subprocess.run([
                 str(self.venv_pip), "install", "-q", "colorama"
@@ -137,7 +144,62 @@ class GrinderTool:
         except Exception as e:
             self.print_error(f"Failed to set up environment: {e}")
             return False
-    
+
+    # Packages that need a compiler and are not required to build firmware or
+    # flash over USB. Mapped to the feature lost when they are skipped.
+    OPTIONAL_PACKAGES = {
+        "detools": "BLE OTA updates (grinder.py upload / build-upload)",
+    }
+
+    def install_without_optional_packages(self, error_output: str) -> bool:
+        """
+        Retry the install with compiler-dependent packages removed.
+
+        Returns True if a usable environment was produced, False if the failure
+        was something other than an optional package.
+        """
+        skipped = [
+            name for name in self.OPTIONAL_PACKAGES
+            if name.lower() in (error_output or "").lower()
+        ]
+        if not skipped:
+            return False
+
+        requirements = self.requirements_txt.read_text().splitlines()
+        kept = []
+        for line in requirements:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            package = re.split(r"[<>=!~\[; ]", stripped, 1)[0].strip().lower()
+            if package in {s.lower() for s in skipped}:
+                continue
+            kept.append(stripped)
+
+        self.print_warning(
+            f"Could not build: {', '.join(skipped)} (needs a C compiler). "
+            "Retrying without it."
+        )
+
+        result = subprocess.run(
+            [str(self.venv_pip), "install", "-q", *kept],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            return False
+
+        for name in skipped:
+            self.print_warning(
+                f"Skipped '{name}' - {self.OPTIONAL_PACKAGES[name]} will not work. "
+                "Everything else, including building firmware and flashing over USB, is ready."
+            )
+            if platform.system() == "Windows":
+                self.print_info(
+                    "To enable it later, install the Microsoft C++ Build Tools, then "
+                    "re-run: python tools\\grinder.py install"
+                )
+        return True
+
     def run_command(self, cmd: List[str], cwd: Optional[Path] = None, capture_output: bool = False) -> subprocess.CompletedProcess:
         """Run a command with proper error handling."""
         try:
