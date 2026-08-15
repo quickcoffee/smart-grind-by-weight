@@ -3,6 +3,18 @@
 #include <math.h>
 #include <algorithm>
 
+namespace {
+// Fixed cap for the handful of operations (outlier-rejected smoothing, the
+// settling debug dump, and 95th-percentile flow) that need a materialized,
+// sortable copy of the samples in a window. Real windows in this codebase
+// top out at 2.5s (~40-210 samples across the supported SPS range), so this
+// is a large safety margin, not a functional limit - it exists so these
+// stack arrays have a compile-time-bounded size instead of scaling with
+// window_ms * sample_rate (which is what let get_min_raw/get_max_raw
+// overflow a task's stack once enough real samples had accumulated).
+constexpr int kMaxStackSamples = 256;
+}  // namespace
+
 CircularBufferMath::CircularBufferMath() {
     write_index = 0;
     samples_count = 0;
@@ -53,35 +65,31 @@ int32_t CircularBufferMath::get_latest_sample() const {
 // Unified smoothing method with outlier rejection on raw data
 int32_t CircularBufferMath::get_smoothed_raw(uint32_t window_ms) const {
     if (samples_count == 0) return 0;
-    
-    // Calculate max samples needed for this window
-    int max_samples = calculate_max_samples_for_window(window_ms);
-    
-    // Allocate temporary array on stack (reasonable size expected)
-    int32_t* samples = (int32_t*)alloca(max_samples * sizeof(int32_t));
-    
-    // Get samples within time window
-    int actual_samples = get_samples_in_window(window_ms, samples);
-    
+
+    // Fixed-size stack array - see kMaxStackSamples for why this isn't sized
+    // off window_ms * sample_rate.
+    int32_t samples[kMaxStackSamples];
+    int actual_samples = get_samples_in_window(window_ms, samples, kMaxStackSamples);
+
     if (actual_samples == 0) {
         return get_latest_sample(); // Fallback to latest sample
     }
-    
+
     // Apply outlier rejection and return smoothed result
     return apply_outlier_rejection(samples, actual_samples);
 }
 
-int CircularBufferMath::get_samples_in_window(uint32_t window_ms, int32_t* samples_out) const {
+int CircularBufferMath::get_samples_in_window(uint32_t window_ms, int32_t* samples_out, int max_samples_out) const {
     if (samples_count == 0) return 0;
-    
+
     uint32_t current_time = millis();
     uint32_t window_start = current_time - window_ms;
     int collected_samples = 0;
-    
+
     // Walk backwards from most recent sample
-    for (int i = 0; i < samples_count; i++) {
+    for (int i = 0; i < samples_count && collected_samples < max_samples_out; i++) {
         uint16_t index = (write_index - 1 - i + MAX_BUFFER_SIZE) % MAX_BUFFER_SIZE;
-        
+
         // Check if sample is within time window
         if (circular_buffer[index].timestamp_ms >= window_start) {
             samples_out[collected_samples] = circular_buffer[index].raw_value;
@@ -90,7 +98,7 @@ int CircularBufferMath::get_samples_in_window(uint32_t window_ms, int32_t* sampl
             break; // Samples are time-ordered, so we can stop here
         }
     }
-    
+
     return collected_samples;
 }
 
@@ -102,23 +110,23 @@ int32_t CircularBufferMath::apply_outlier_rejection(const int32_t* samples, int 
     // Decide how many to reject from each side
     int reject_each_side = 1; // (HW_LOADCELL_SAMPLE_RATE_SPS == 80) ? 8 : 1;
 
+    // count is always <= kMaxStackSamples: it's either get_smoothed_raw's own
+    // actual_samples (capped when collecting) or a caller-provided value that
+    // respects the same cap.
+    int32_t sorted_samples[kMaxStackSamples];
+    int sort_count = std::min(count, kMaxStackSamples);
+    memcpy(sorted_samples, samples, sort_count * sizeof(int32_t));
+    std::sort(sorted_samples, sorted_samples + sort_count);
+
     // Not enough samples left -> fallback to median
-    if (count <= 2 * reject_each_side) {
-        int32_t* sorted_samples = (int32_t*)alloca(count * sizeof(int32_t));
-        memcpy(sorted_samples, samples, count * sizeof(int32_t));
-        std::sort(sorted_samples, sorted_samples + count);
-        return sorted_samples[count / 2];
+    if (sort_count <= 2 * reject_each_side) {
+        return sorted_samples[sort_count / 2];
     }
 
-    // Copy and sort
-    int32_t* sorted_samples = (int32_t*)alloca(count * sizeof(int32_t));
-    memcpy(sorted_samples, samples, count * sizeof(int32_t));
-    std::sort(sorted_samples, sorted_samples + count);
-
     // Average trimmed values
-    int samples_to_average = count - 2 * reject_each_side;
+    int samples_to_average = sort_count - 2 * reject_each_side;
     int64_t sum = 0;
-    for (int i = reject_each_side; i < count - reject_each_side; i++) {
+    for (int i = reject_each_side; i < sort_count - reject_each_side; i++) {
         sum += sorted_samples[i];
     }
 
@@ -263,27 +271,24 @@ bool CircularBufferMath::is_settled(uint32_t window_ms, int32_t threshold_raw_un
     static uint32_t last_debug_time = 0;
     if (millis() - last_debug_time > 1000) {
         // Get raw samples for display
-        int max_samples = calculate_max_samples_for_window(window_ms);
-        if (max_samples > 0) {
-            int32_t* samples = (int32_t*)alloca(max_samples * sizeof(int32_t));
-            int actual_samples = get_samples_in_window(window_ms, samples);
-            
-            // Format raw samples on one line (limit to first 10 samples to avoid spam)
-            char sample_str[256] = {0};
-            int offset = 0;
-            int samples_to_show = std::min(actual_samples, 10);
-            for (int i = 0; i < samples_to_show; i++) {
-                offset += snprintf(sample_str + offset, sizeof(sample_str) - offset, 
-                                 "%ld%s", (long)samples[i], (i < samples_to_show - 1) ? "," : "");
-            }
-            if (actual_samples > 10) {
-                offset += snprintf(sample_str + offset, sizeof(sample_str) - offset, "...");
-            }
-            
-            LOG_LOADCELL_DEBUG("[SETTLING] Window:%lums Samples:%d Raw:[%s] StdDev:%.2f Threshold:%ld Settled:%s\n",
-                             window_ms, actual_samples, sample_str, std_dev, (long)threshold_raw_units, 
-                             settled ? "YES" : "NO");
+        int32_t samples[kMaxStackSamples];
+        int actual_samples = get_samples_in_window(window_ms, samples, kMaxStackSamples);
+
+        // Format raw samples on one line (limit to first 10 samples to avoid spam)
+        char sample_str[256] = {0};
+        int offset = 0;
+        int samples_to_show = std::min(actual_samples, 10);
+        for (int i = 0; i < samples_to_show; i++) {
+            offset += snprintf(sample_str + offset, sizeof(sample_str) - offset,
+                             "%ld%s", (long)samples[i], (i < samples_to_show - 1) ? "," : "");
         }
+        if (actual_samples > 10) {
+            offset += snprintf(sample_str + offset, sizeof(sample_str) - offset, "...");
+        }
+
+        LOG_LOADCELL_DEBUG("[SETTLING] Window:%lums Samples:%d Raw:[%s] StdDev:%.2f Threshold:%ld Settled:%s\n",
+                         window_ms, actual_samples, sample_str, std_dev, (long)threshold_raw_units,
+                         settled ? "YES" : "NO");
         last_debug_time = millis();
     }
     
@@ -303,74 +308,77 @@ float CircularBufferMath::get_settling_confidence(uint32_t window_ms) const {
 }
 
 float CircularBufferMath::get_standard_deviation_raw(uint32_t window_ms) const {
-    // Calculate max samples needed
-    int max_samples = calculate_max_samples_for_window(window_ms);
-    if (max_samples == 0) return 0.0f;
-    
-    // Allocate temporary array
-    int32_t* samples = (int32_t*)alloca(max_samples * sizeof(int32_t));
-    
-    // Get samples within time window
-    int actual_samples = get_samples_in_window(window_ms, samples);
-    
-    return calculate_standard_deviation(samples, actual_samples);
-}
+    if (samples_count == 0) return 0.0f;
 
-float CircularBufferMath::calculate_standard_deviation(const int32_t* samples, int count) const {
-    if (count <= 1) return 0.0f;
-    
-    // Calculate mean
+    uint32_t current_time = millis();
+    uint32_t window_start = current_time - window_ms;
+
+    // First pass: count samples in window and sum them for the mean. Two
+    // direct passes over the ring buffer instead of copying into a temp
+    // array - no allocation needed at all.
+    int count = 0;
     int64_t sum = 0;
-    for (int i = 0; i < count; i++) {
-        sum += samples[i];
+    for (int i = 0; i < samples_count; i++) {
+        uint16_t index = (write_index - 1 - i + MAX_BUFFER_SIZE) % MAX_BUFFER_SIZE;
+        if (circular_buffer[index].timestamp_ms < window_start) break;
+        sum += circular_buffer[index].raw_value;
+        count++;
     }
+
+    if (count <= 1) return 0.0f;
+
     float mean = (float)sum / count;
-    
-    // Calculate variance
+
+    // Second pass: variance against the mean, over the same window.
     float variance_sum = 0.0f;
     for (int i = 0; i < count; i++) {
-        float diff = samples[i] - mean;
+        uint16_t index = (write_index - 1 - i + MAX_BUFFER_SIZE) % MAX_BUFFER_SIZE;
+        float diff = circular_buffer[index].raw_value - mean;
         variance_sum += diff * diff;
     }
-    
+
     float variance = variance_sum / (count - 1);
     return sqrt(variance);
 }
 
 float CircularBufferMath::get_raw_flow_rate(uint32_t window_ms) const {
-    // Calculate max samples needed
-    int max_samples = calculate_max_samples_for_window(window_ms);
-    if (max_samples < 2) return 0.0f;
-    
-    // Allocate temporary arrays
-    int32_t* samples = (int32_t*)alloca(max_samples * sizeof(int32_t));
-    uint32_t* timestamps = (uint32_t*)alloca(max_samples * sizeof(uint32_t));
-    
-    // Get samples and timestamps within window
-    int collected = 0;
+    if (samples_count < 2) return 0.0f;
+
+    // Flow rate only needs the newest and oldest sample in the window, not
+    // the whole series - track them directly during a single walk instead of
+    // copying every sample into a temp array.
     uint32_t current_time = millis();
     uint32_t window_start = current_time - window_ms;
-    
-    for (int i = 0; i < (int)samples_count && collected < max_samples; i++) {
+
+    bool have_newest = false;
+    int32_t newest_raw = 0, oldest_raw = 0;
+    uint32_t newest_ts = 0, oldest_ts = 0;
+    int collected = 0;
+
+    for (int i = 0; i < (int)samples_count; i++) {
         uint16_t index = (write_index - 1 - i + MAX_BUFFER_SIZE) % MAX_BUFFER_SIZE;
-        
-        if (circular_buffer[index].timestamp_ms >= window_start) {
-            samples[collected] = circular_buffer[index].raw_value;
-            timestamps[collected] = circular_buffer[index].timestamp_ms;
-            collected++;
-        } else {
-            break;
+        const AdcSample& sample = circular_buffer[index];
+
+        if (sample.timestamp_ms < window_start) break;
+
+        if (!have_newest) {
+            newest_raw = sample.raw_value;
+            newest_ts = sample.timestamp_ms;
+            have_newest = true;
         }
+        oldest_raw = sample.raw_value;
+        oldest_ts = sample.timestamp_ms;
+        collected++;
     }
-    
+
     if (collected < 2) return 0.0f;
-    
+
     // Simple linear regression for flow rate
-    int32_t raw_change = samples[0] - samples[collected - 1]; // Most recent - oldest
-    uint32_t time_change = timestamps[0] - timestamps[collected - 1];
-    
+    int32_t raw_change = newest_raw - oldest_raw;
+    uint32_t time_change = newest_ts - oldest_ts;
+
     if (time_change == 0) return 0.0f;
-    
+
     // Return raw units per second
     return (float)raw_change * 1000.0f / time_change;
 }
@@ -392,19 +400,23 @@ float CircularBufferMath::get_raw_flow_rate_95th_percentile(uint32_t window_ms) 
     uint32_t min_window_for_samples = (MIN_SAMPLES_FOR_PERCENTILE * 1000) / HW_LOADCELL_SAMPLE_RATE_SPS;
     uint32_t effective_window_ms = std::max(window_ms, min_window_for_samples);
 
-    // 1. Collect all relevant samples and timestamps in one go.
+    // 1. Collect all relevant samples and timestamps in one go, into a
+    // fixed-size stack array (see kMaxStackSamples) rather than sizing the
+    // allocation off the window - real callers here use windows of a few
+    // seconds at most, comfortably under the cap.
     int max_samples = calculate_max_samples_for_window(effective_window_ms);
-    if (max_samples < MIN_SAMPLES_FOR_PERCENTILE) {
+    if (max_samples < (int)MIN_SAMPLES_FOR_PERCENTILE) {
         return get_raw_flow_rate(effective_window_ms);
     }
+    int capacity = std::min(max_samples, kMaxStackSamples);
 
-    int32_t* sample_values = (int32_t*)alloca(max_samples * sizeof(int32_t));
-    uint32_t* sample_times = (uint32_t*)alloca(max_samples * sizeof(uint32_t));
+    int32_t sample_values[kMaxStackSamples];
+    uint32_t sample_times[kMaxStackSamples];
     int collected_samples = 0;
     uint32_t current_time = millis();
     uint32_t window_start_time = current_time - effective_window_ms;
 
-    for (int i = 0; i < (int)samples_count && collected_samples < max_samples; ++i) {
+    for (int i = 0; i < (int)samples_count && collected_samples < capacity; ++i) {
         uint16_t index = (write_index - 1 - i + MAX_BUFFER_SIZE) % MAX_BUFFER_SIZE;
         if (circular_buffer[index].timestamp_ms >= window_start_time) {
             // Samples are collected from newest to oldest
@@ -423,7 +435,7 @@ float CircularBufferMath::get_raw_flow_rate_95th_percentile(uint32_t window_ms) 
     // 2. Calculate the number of sub-windows and allocate space for their flow rates.
     int num_sub_windows = (effective_window_ms > SUB_WINDOW_MS) ? 1 + (effective_window_ms - SUB_WINDOW_MS) / STEP_MS : 1;
     num_sub_windows = std::max(MIN_SUB_WINDOWS, std::min(MAX_SUB_WINDOWS, num_sub_windows));
-    float* flow_rates = (float*)alloca(num_sub_windows * sizeof(float));
+    float flow_rates[MAX_SUB_WINDOWS];  // num_sub_windows <= MAX_SUB_WINDOWS, clamped above
     int valid_flow_rates_count = 0;
 
     // 3. Iterate through sub-windows and calculate flow rate for each.
@@ -476,39 +488,51 @@ bool CircularBufferMath::raw_flowrate_is_stable(uint32_t window_ms) const {
 }
 
 int32_t CircularBufferMath::get_min_raw(uint32_t window_ms) const {
-    int max_samples = calculate_max_samples_for_window(window_ms);
-    if (max_samples == 0) return 0;
-    
-    int32_t* samples = (int32_t*)alloca(max_samples * sizeof(int32_t));
-    int actual_samples = get_samples_in_window(window_ms, samples);
-    
-    if (actual_samples == 0) return 0;
-    
-    int32_t min_val = samples[0];
-    for (int i = 1; i < actual_samples; i++) {
-        if (samples[i] < min_val) {
-            min_val = samples[i];
+    // Min is a plain reduction over the window - walk the ring buffer
+    // directly instead of copying it into a temp array first. This is what
+    // used to alloca(window_ms * sample_rate) bytes: for a 60s window (the
+    // screensaver's weight-activity check) that grew past the UI render
+    // task's 8KB stack once ~600+ real samples had accumulated, corrupting
+    // the stack-protector canary. See CLAUDE.md-adjacent postmortem: reset
+    // reason PANIC (Exception) / "Stack smashing protect failure!".
+    if (samples_count == 0) return 0;
+
+    uint32_t current_time = millis();
+    uint32_t window_start = current_time - window_ms;
+
+    bool found = false;
+    int32_t min_val = 0;
+    for (int i = 0; i < samples_count; i++) {
+        uint16_t index = (write_index - 1 - i + MAX_BUFFER_SIZE) % MAX_BUFFER_SIZE;
+        if (circular_buffer[index].timestamp_ms < window_start) break;
+        int32_t value = circular_buffer[index].raw_value;
+        if (!found || value < min_val) {
+            min_val = value;
+            found = true;
         }
     }
-    return min_val;
+    return found ? min_val : 0;
 }
 
 int32_t CircularBufferMath::get_max_raw(uint32_t window_ms) const {
-    int max_samples = calculate_max_samples_for_window(window_ms);
-    if (max_samples == 0) return 0;
-    
-    int32_t* samples = (int32_t*)alloca(max_samples * sizeof(int32_t));
-    int actual_samples = get_samples_in_window(window_ms, samples);
-    
-    if (actual_samples == 0) return 0;
-    
-    int32_t max_val = samples[0];
-    for (int i = 1; i < actual_samples; i++) {
-        if (samples[i] > max_val) {
-            max_val = samples[i];
+    // See get_min_raw - same direct-scan fix, no temp array.
+    if (samples_count == 0) return 0;
+
+    uint32_t current_time = millis();
+    uint32_t window_start = current_time - window_ms;
+
+    bool found = false;
+    int32_t max_val = 0;
+    for (int i = 0; i < samples_count; i++) {
+        uint16_t index = (write_index - 1 - i + MAX_BUFFER_SIZE) % MAX_BUFFER_SIZE;
+        if (circular_buffer[index].timestamp_ms < window_start) break;
+        int32_t value = circular_buffer[index].raw_value;
+        if (!found || value > max_val) {
+            max_val = value;
+            found = true;
         }
     }
-    return max_val;
+    return found ? max_val : 0;
 }
 
 void CircularBufferMath::reset_display_filter() {

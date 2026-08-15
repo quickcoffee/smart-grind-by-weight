@@ -55,10 +55,10 @@ private:
     mutable uint32_t flow_stable_since_ms;  // When flow rate first became stable
     mutable bool flow_stability_initialized;
     
-    // Helper methods - using dynamic arrays based on window size
-    int get_samples_in_window(uint32_t window_ms, int32_t* samples_out) const;
+    // Helper methods. samples_out capacity is bounded by the caller (fixed-size
+    // stack arrays, never alloca) via max_samples_out.
+    int get_samples_in_window(uint32_t window_ms, int32_t* samples_out, int max_samples_out) const;
     int32_t apply_outlier_rejection(const int32_t* samples, int count) const;
-    float calculate_standard_deviation(const int32_t* samples, int count) const;
     int32_t get_latest_sample() const;
     int calculate_max_samples_for_window(uint32_t window_ms) const;
     
